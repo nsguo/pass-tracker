@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Climbing Pass Tracker</title>
+
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Pass Tracker">
+  <meta name="theme-color" content="#f3f4f6">
+
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #f3f4f6;
+      margin: 0;
+      padding: 16px;
+      padding-top: max(16px, env(safe-area-inset-top));
+      padding-bottom: max(16px, env(safe-area-inset-bottom));
+    }
+
+    h1 { text-align: center; }
+
+    .card {
+      background: white;
+      border-radius: 16px;
+      padding: 16px;
+      margin-bottom: 12px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, .08);
+    }
+
+    input, button {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 12px;
+      margin-bottom: 8px;
+      border-radius: 10px;
+      border: 1px solid #ddd;
+      font-size: 16px;
+    }
+
+    button { border: none; cursor: pointer; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+
+    .primary { background: #2563eb; color: white; }
+    .success { background: #16a34a; color: white; }
+    .danger { background: #dc2626; color: white; }
+    .secondary { background: #6b7280; color: white; }
+
+    .row { display: flex; gap: 8px; }
+    .row button { flex: 1; }
+
+    .gym-name { font-size: 22px; font-weight: bold; }
+    .passes { font-size: 34px; font-weight: bold; }
+    .warning { color: #d97706; font-weight: bold; }
+    .expired { color: #dc2626; font-weight: bold; }
+
+    .pack {
+      background: #fafafa;
+      padding: 8px;
+      border-radius: 8px;
+      margin-top: 6px;
+    }
+
+    .visit { padding: 6px 0; border-bottom: 1px solid #eee; }
+
+    .status-bar {
+      text-align: center;
+      font-size: 13px;
+      color: #6b7280;
+      margin-bottom: 12px;
+      min-height: 16px;
+    }
+
+    .status-bar.error { color: #dc2626; font-weight: bold; }
+
+    .empty-state { text-align: center; color: #9ca3af; padding: 24px 0; }
+
+    .code-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 13px;
+      color: #374151;
+    }
+
+    .code-bar code {
+      background: #f3f4f6;
+      padding: 4px 8px;
+      border-radius: 6px;
+      font-size: 14px;
+      letter-spacing: 0.5px;
+    }
+
+    .code-bar button {
+      width: auto;
+      margin-bottom: 0;
+      padding: 8px 12px;
+      font-size: 13px;
+    }
+
+    .hidden { display: none; }
+
+    .setup-divider {
+      text-align: center;
+      color: #9ca3af;
+      font-size: 13px;
+      margin: 12px 0;
+    }
+  </style>
+</head>
+
+<body>
+
+  <h1>🧗 Pass Tracker</h1>
+  <div id="statusBar" class="status-bar"></div>
+
+  <!-- SETUP SCREEN: shown until an access code is established -->
+  <div id="setupScreen" class="card hidden">
+    <h3>Welcome</h3>
+    <p>This tracker stores your data in the cloud under a personal access code, so it survives even if your phone clears site data. Write the code down somewhere safe (Notes app, etc) once it's created.</p>
+
+    <button class="primary" onclick="createNewTracker()">Create a New Tracker</button>
+
+    <div class="setup-divider">— or, if you already have a code —</div>
+
+    <input id="existingCodeInput" placeholder="Enter your access code">
+    <button class="secondary" onclick="useExistingCode()">Use This Code</button>
+  </div>
+
+  <!-- MAIN APP -->
+  <div id="mainApp" class="hidden">
+
+    <div class="card code-bar">
+      <span>Access code: <code id="codeDisplay"></code></span>
+      <div class="row" style="gap:6px;">
+        <button class="secondary" onclick="copyCode()">Copy</button>
+        <button class="secondary" onclick="switchTracker()">Switch</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Add Pass Pack</h3>
+      <input id="gymName" placeholder="Gym Name">
+      <input id="passCount" type="number" placeholder="Number of Passes">
+      <input id="expiryDate" type="date">
+      <button class="primary" onclick="addPack()">Add Pass Pack</button>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <button class="secondary" onclick="downloadBackup()">Download Backup</button>
+        <button class="secondary" onclick="document.getElementById('importFile').click()">Import Backup</button>
+      </div>
+      <input id="importFile" type="file" style="display:none" onchange="importData(event)">
+    </div>
+
+    <div id="gyms"></div>
+
+    <div class="card">
+      <h3>Visit History</h3>
+      <div id="history"></div>
+    </div>
+
+  </div>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-app.js";
+    import {
+      getFirestore, doc, getDoc, setDoc
+    } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-app.js";
+
+    // ---------------------------------------------------------------
+    // PASTE YOUR OWN FIREBASE CONFIG HERE (from Firebase console ->
+    // Project Settings -> General -> Your apps -> Web app)
+    // ---------------------------------------------------------------
+    const firebaseConfig = {
+      apiKey: "AIzaSyCm4B4k_amzphqZbSw0ojLqsdQX2Jgtt1E",
+      authDomain: "pass-tracker-e2c13.firebaseapp.com",
+      projectId: "pass-tracker-e2c13",
+      storageBucket: "pass-tracker-e2c13.firebasestorage.app",
+      messagingSenderId: "530484049180",
+      appId: "1:530484049180:web:a931f482d006949bce36d9"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+
+    const LOCAL_CODE_KEY = "passTrackerAccessCode";
+
+    let data = { gyms: [], visits: [] };
+    let currentCode = null;
+
+    function setStatus(msg, isError = false) {
+      const el = document.getElementById("statusBar");
+      el.textContent = msg;
+      el.className = "status-bar" + (isError ? " error" : "");
+    }
+
+    function show(id) { document.getElementById(id).classList.remove("hidden"); }
+    function hide(id) { document.getElementById(id).classList.add("hidden"); }
+
+    function generateCode() {
+      const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no ambiguous 0/O, 1/I
+      const bytes = new Uint8Array(12);
+      crypto.getRandomValues(bytes);
+      let code = "";
+      for (let i = 0; i < bytes.length; i++) {
+        if (i > 0 && i % 4 === 0) code += "-";
+        code += chars[bytes[i] % chars.length];
+      }
+      return code;
+    }
+
+    function sanitizeCode(raw) {
+      return raw.trim().toUpperCase();
+    }
+
+    async function loadOrCreateDoc(code) {
+      const ref = doc(db, "trackers", code);
+      const snap = await getDoc(ref);
+      if (snap.exists()) {
+        return snap.data();
+      }
+      const fresh = { gyms: [], visits: [] };
+      await setDoc(ref, fresh);
+      return fresh;
+    }
+
+    async function enterTracker(code) {
+      setStatus("Connecting…");
+      try {
+        data = await loadOrCreateDoc(code);
+        currentCode = code;
+        localStorage.setItem(LOCAL_CODE_KEY, code);
+        document.getElementById("codeDisplay").textContent = code;
+        hide("setupScreen");
+        show("mainApp");
+        setStatus("");
+        render();
+      } catch (error) {
+        console.error(error);
+        setStatus("Couldn't connect — check your internet connection and Firebase setup", true);
+      }
+    }
+
+    window.createNewTracker = function () {
+      const code = generateCode();
+      enterTracker(code).then(() => {
+        alert("Your access code is:\n\n" + code + "\n\nWrite this down somewhere safe (e.g. your Notes app). It's the only way to get your data back if this device's storage is ever cleared.");
+      });
+    };
+
+    window.useExistingCode = function () {
+      const raw = document.getElementById("existingCodeInput").value;
+      if (!raw.trim()) {
+        alert("Enter a code first");
+        return;
+      }
+      enterTracker(sanitizeCode(raw));
+    };
+
+    window.switchTracker = function () {
+      if (!confirm("Switch to a different tracker code? Your current data stays safely in the cloud under this code.")) return;
+      localStorage.removeItem(LOCAL_CODE_KEY);
+      currentCode = null;
+      hide("mainApp");
+      show("setupScreen");
+    };
+
+    window.copyCode = async function () {
+      try {
+        await navigator.clipboard.writeText(currentCode);
+        setStatus("Code copied");
+        setTimeout(() => setStatus(""), 1500);
+      } catch {
+        alert("Your code: " + currentCode);
+      }
+    };
+
+    async function save() {
+      try {
+        setStatus("Saving…");
+        await setDoc(doc(db, "trackers", currentCode), data);
+        setStatus("Saved");
+        setTimeout(() => setStatus(""), 1200);
+      } catch (error) {
+        console.error("Save failed:", error);
+        setStatus("Couldn't save — check your internet connection", true);
+      }
+      render();
+    }
+
+    window.addPack = async function () {
+      const gymName = document.getElementById("gymName").value.trim();
+      const passCount = parseInt(document.getElementById("passCount").value);
+      const expiry = document.getElementById("expiryDate").value;
+
+      if (!gymName || !passCount || !expiry) {
+        alert("Fill all fields");
+        return;
+      }
+
+      let gym = data.gyms.find(g => g.name === gymName);
+      if (!gym) {
+        gym = { id: Date.now(), name: gymName, packs: [] };
+        data.gyms.push(gym);
+      }
+
+      gym.packs.push({ id: Date.now() + Math.random(), remaining: passCount, expiry });
+
+      document.getElementById("gymName").value = "";
+      document.getElementById("passCount").value = "";
+      document.getElementById("expiryDate").value = "";
+
+      await save();
+    };
+
+    function totalPasses(gym) {
+      return gym.packs.reduce((a, p) => a + p.remaining, 0);
+    }
+
+    function daysUntil(date) {
+      const now = new Date();
+      const exp = new Date(date);
+      return Math.ceil((exp - now) / (1000 * 60 * 60 * 24));
+    }
+
+    window.climb = async function (gymId) {
+      const gym = data.gyms.find(g => g.id === gymId);
+      const pack = gym.packs
+        .filter(p => p.remaining > 0)
+        .sort((a, b) => new Date(a.expiry) - new Date(b.expiry))[0];
+
+      if (!pack) {
+        alert("No passes remaining");
+        return;
+      }
+
+      pack.remaining--;
+      data.visits.unshift({ gym: gym.name, date: new Date().toISOString() });
+
+      await save();
+    };
+
+    window.deleteGym = async function (id) {
+      if (!confirm("Delete gym?")) return;
+      data.gyms = data.gyms.filter(g => g.id !== id);
+      await save();
+    };
+
+    window.downloadBackup = function () {
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const date = new Date().toISOString().split("T")[0];
+      a.href = url;
+      a.download = `climbing-pass-backup-${date}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    };
+
+    window.importData = function (event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = async e => {
+        try {
+          const imported = JSON.parse(e.target.result);
+          if (!imported.gyms || !imported.visits) {
+            alert("Invalid backup file");
+            return;
+          }
+          data = imported;
+          await save();
+          alert("Backup restored successfully");
+        } catch {
+          alert("Could not read backup file");
+        }
+      };
+      reader.readAsText(file);
+      event.target.value = "";
+    };
+
+    function render() {
+      const gymsEl = document.getElementById("gyms");
+
+      if (data.gyms.length === 0) {
+        gymsEl.innerHTML = `<div class="card empty-state">No gyms yet — add a pass pack above to get started.</div>`;
+      } else {
+        gymsEl.innerHTML = data.gyms.map(gym => {
+          const total = totalPasses(gym);
+          const next = gym.packs
+            .filter(p => p.remaining > 0)
+            .sort((a, b) => new Date(a.expiry) - new Date(b.expiry))[0];
+
+          let warning = "";
+          if (next) {
+            const days = daysUntil(next.expiry);
+            if (days < 0) warning = `<div class="expired">Expired</div>`;
+            else if (days <= 30) warning = `<div class="warning">${days} day(s) until expiry</div>`;
+          }
+
+          return `
+            <div class="card">
+              <div class="gym-name">${gym.name}</div>
+              <div class="passes">${total}</div>
+              ${warning}
+              ${next ? `<div>Next expiry: ${next.expiry}</div>` : `<div>No active packs</div>`}
+              <br>
+              <div class="row">
+                <button class="success" onclick="climb(${gym.id})">Climbed Today</button>
+                <button class="danger" onclick="deleteGym(${gym.id})">Delete</button>
+              </div>
+              ${gym.packs.map(p => `
+                <div class="pack">${p.remaining} pass(es) • expires ${p.expiry}</div>
+              `).join("")}
+            </div>
+          `;
+        }).join("");
+      }
+
+      document.getElementById("history").innerHTML =
+        data.visits.length
+          ? data.visits.slice(0, 20).map(v => `
+              <div class="visit">${new Date(v.date).toLocaleDateString()} — ${v.gym}</div>
+            `).join("")
+          : "No climbs logged yet";
+    }
+
+    async function init() {
+      const savedCode = localStorage.getItem(LOCAL_CODE_KEY);
+      if (savedCode) {
+        await enterTracker(savedCode);
+      } else {
+        show("setupScreen");
+      }
+    }
+
+    init();
+  </script>
+
+</body>
+</html>
