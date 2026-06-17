@@ -49,6 +49,7 @@
     .success { background: #16a34a; color: white; }
     .danger { background: #dc2626; color: white; }
     .secondary { background: #6b7280; color: white; }
+    .warn-btn { background: #d97706; color: white; }
 
     .row { display: flex; gap: 8px; }
     .row button { flex: 1; }
@@ -87,6 +88,7 @@
       gap: 8px;
       font-size: 13px;
       color: #374151;
+      flex-wrap: wrap;
     }
 
     .code-bar code {
@@ -112,6 +114,13 @@
       font-size: 13px;
       margin: 12px 0;
     }
+
+    .hint {
+      font-size: 12px;
+      color: #9ca3af;
+      margin-top: -4px;
+      margin-bottom: 8px;
+    }
   </style>
 </head>
 
@@ -120,26 +129,29 @@
   <h1>🧗 Pass Tracker</h1>
   <div id="statusBar" class="status-bar"></div>
 
-  <!-- SETUP SCREEN: shown until an access code is established -->
+  <!-- SETUP SCREEN: shown until an access key is established -->
   <div id="setupScreen" class="card hidden">
     <h3>Welcome</h3>
-    <p>This tracker stores your data in the cloud under a personal access code, so it survives even if your phone clears site data. Write the code down somewhere safe (Notes app, etc) once it's created.</p>
+    <p>This tracker stores your data in the cloud under a personal access key, so it survives even if your phone clears site data.</p>
 
-    <button class="primary" onclick="createNewTracker()">Create a New Tracker</button>
+    <input id="newAccessKeyInput" placeholder="Choose an access key (12+ characters)">
+    <div class="hint">Pick something memorable but long — a short phrase works well. Write it down somewhere safe once created.</div>
+    <button class="primary" onclick="createNewTracker()">Create Tracker</button>
 
-    <div class="setup-divider">— or, if you already have a code —</div>
+    <div class="setup-divider">— or, if you already have a key —</div>
 
-    <input id="existingCodeInput" placeholder="Enter your access code">
-    <button class="secondary" onclick="useExistingCode()">Use This Code</button>
+    <input id="existingCodeInput" placeholder="Enter your access key">
+    <button class="secondary" onclick="useExistingCode()">Use This Key</button>
   </div>
 
   <!-- MAIN APP -->
   <div id="mainApp" class="hidden">
 
     <div class="card code-bar">
-      <span>Access code: <code id="codeDisplay"></code></span>
-      <div class="row" style="gap:6px;">
+      <span>Access key: <code id="codeDisplay"></code></span>
+      <div class="row" style="gap:6px; width:auto;">
         <button class="secondary" onclick="copyCode()">Copy</button>
+        <button class="secondary" onclick="refreshFromCloud()">Refresh</button>
         <button class="secondary" onclick="switchTracker()">Switch</button>
       </div>
     </div>
@@ -191,7 +203,7 @@
     // PASTE YOUR OWN FIREBASE CONFIG HERE (from Firebase console ->
     // Project Settings -> General -> Your apps -> Web app)
     // ---------------------------------------------------------------
-    const firebaseConfig = {
+ const firebaseConfig = {
       apiKey: "AIzaSyCm4B4k_amzphqZbSw0ojLqsdQX2Jgtt1E",
       authDomain: "pass-tracker-e2c13.firebaseapp.com",
       projectId: "pass-tracker-e2c13",
@@ -199,14 +211,16 @@
       messagingSenderId: "530484049180",
       appId: "1:530484049180:web:a931f482d006949bce36d9"
     };
-
+    
     const app = initializeApp(firebaseConfig);
     const db = getFirestore(app);
 
     const LOCAL_CODE_KEY = "passTrackerAccessCode";
+    const MIN_KEY_LENGTH = 12;
 
     let data = { gyms: [], visits: [] };
     let currentCode = null;
+    let lastClimb = null; // { gymId, packId } -- transient, not saved to Firestore
 
     function setStatus(msg, isError = false) {
       const el = document.getElementById("statusBar");
@@ -217,20 +231,8 @@
     function show(id) { document.getElementById(id).classList.remove("hidden"); }
     function hide(id) { document.getElementById(id).classList.add("hidden"); }
 
-    function generateCode() {
-      const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no ambiguous 0/O, 1/I
-      const bytes = new Uint8Array(12);
-      crypto.getRandomValues(bytes);
-      let code = "";
-      for (let i = 0; i < bytes.length; i++) {
-        if (i > 0 && i % 4 === 0) code += "-";
-        code += chars[bytes[i] % chars.length];
-      }
-      return code;
-    }
-
     function sanitizeCode(raw) {
-      return raw.trim().toUpperCase();
+      return raw.trim().toLowerCase();
     }
 
     function formatDateLocal(d) {
@@ -247,21 +249,22 @@
       return formatDateLocal(d);
     }
 
-    async function loadOrCreateDoc(code) {
-      const ref = doc(db, "trackers", code);
-      const snap = await getDoc(ref);
-      if (snap.exists()) {
-        return snap.data();
-      }
-      const fresh = { gyms: [], visits: [] };
-      await setDoc(ref, fresh);
-      return fresh;
-    }
-
-    async function enterTracker(code) {
+    // Strict lookup -- does NOT create a doc if missing.
+    async function enterExistingTracker(code, { silentFail = false } = {}) {
       setStatus("Connecting…");
       try {
-        data = await loadOrCreateDoc(code);
+        const ref = doc(db, "trackers", code);
+        const snap = await getDoc(ref);
+
+        if (!snap.exists()) {
+          setStatus("");
+          if (!silentFail) {
+            alert("No tracker found for that access key. Double check it, or use 'Create Tracker' to start a new one.");
+          }
+          return false;
+        }
+
+        data = snap.data();
         currentCode = code;
         localStorage.setItem(LOCAL_CODE_KEY, code);
         document.getElementById("codeDisplay").textContent = code;
@@ -269,32 +272,67 @@
         show("mainApp");
         setStatus("");
         render();
+        return true;
       } catch (error) {
         console.error(error);
-        setStatus("Couldn't connect — check your internet connection and Firebase setup", true);
+        setStatus("Couldn't connect — check your internet connection", true);
+        return false;
       }
     }
 
-    window.createNewTracker = function () {
-      const code = generateCode();
-      enterTracker(code).then(() => {
-        alert("Your access code is:\n\n" + code + "\n\nWrite this down somewhere safe (e.g. your Notes app). It's the only way to get your data back if this device's storage is ever cleared.");
-      });
+    window.createNewTracker = async function () {
+      const raw = document.getElementById("newAccessKeyInput").value;
+      const key = sanitizeCode(raw);
+
+      if (key.length < MIN_KEY_LENGTH) {
+        alert(`Choose an access key with at least ${MIN_KEY_LENGTH} characters, so it's hard for others to guess.`);
+        return;
+      }
+
+      setStatus("Checking availability…");
+      try {
+        const ref = doc(db, "trackers", key);
+        const snap = await getDoc(ref);
+
+        if (snap.exists()) {
+          setStatus("");
+          alert("That access key is already taken. Please choose a different one.");
+          return;
+        }
+
+        const fresh = { gyms: [], visits: [], accessKey: key };
+        await setDoc(ref, fresh);
+
+        data = fresh;
+        currentCode = key;
+        localStorage.setItem(LOCAL_CODE_KEY, key);
+        document.getElementById("codeDisplay").textContent = key;
+        hide("setupScreen");
+        show("mainApp");
+        setStatus("");
+        render();
+
+        alert("Tracker created! Your access key is:\n\n" + key + "\n\nWrite this down somewhere safe — it's the only way to get your data back if this device's storage is ever cleared.");
+      } catch (error) {
+        console.error(error);
+        setStatus("Couldn't create tracker — check your internet connection and Firebase setup", true);
+      }
     };
 
     window.useExistingCode = function () {
       const raw = document.getElementById("existingCodeInput").value;
       if (!raw.trim()) {
-        alert("Enter a code first");
+        alert("Enter your access key first");
         return;
       }
-      enterTracker(sanitizeCode(raw));
+      enterExistingTracker(sanitizeCode(raw));
     };
 
     window.switchTracker = function () {
-      if (!confirm("Switch to a different tracker code? Your current data stays safely in the cloud under this code.")) return;
+      if (!confirm("Switch to a different tracker key? Your current data stays safely in the cloud under this key.")) return;
       localStorage.removeItem(LOCAL_CODE_KEY);
       currentCode = null;
+      lastClimb = null;
       hide("mainApp");
       show("setupScreen");
     };
@@ -302,10 +340,30 @@
     window.copyCode = async function () {
       try {
         await navigator.clipboard.writeText(currentCode);
-        setStatus("Code copied");
+        setStatus("Key copied");
         setTimeout(() => setStatus(""), 1500);
       } catch {
-        alert("Your code: " + currentCode);
+        alert("Your key: " + currentCode);
+      }
+    };
+
+    window.refreshFromCloud = async function () {
+      if (!currentCode) return;
+      setStatus("Refreshing…");
+      try {
+        const ref = doc(db, "trackers", currentCode);
+        const snap = await getDoc(ref);
+        if (snap.exists()) {
+          data = snap.data();
+          render();
+          setStatus("Refreshed");
+          setTimeout(() => setStatus(""), 1200);
+        } else {
+          setStatus("Tracker not found in the cloud", true);
+        }
+      } catch (error) {
+        console.error(error);
+        setStatus("Couldn't refresh — check your internet connection", true);
       }
     };
 
@@ -341,13 +399,14 @@
       document.getElementById("newGymName").value = "";
 
       await save();
+      await refreshFromCloud();
     };
 
     window.onGymSelectChange = function () {
       const select = document.getElementById("gymNameSelect");
       const gym = data.gyms.find(g => g.name === select.value);
       const months = gym ? (gym.defaultExpiryMonths || 12) : 12;
-      document.getElementById("expiryDate").value = getDefaultExpiry(months);
+      document.getElementById("expiryDate").value = gym ? getDefaultExpiry(months) : "";
     };
 
     window.addPack = async function () {
@@ -381,6 +440,12 @@
       return gym.packs.reduce((a, p) => a + p.remaining, 0);
     }
 
+    function nextActivePack(gym) {
+      return gym.packs
+        .filter(p => p.remaining > 0)
+        .sort((a, b) => new Date(a.expiry) - new Date(b.expiry))[0];
+    }
+
     function daysUntil(date) {
       const now = new Date();
       const exp = new Date(date);
@@ -389,9 +454,7 @@
 
     window.climb = async function (gymId) {
       const gym = data.gyms.find(g => g.id === gymId);
-      const pack = gym.packs
-        .filter(p => p.remaining > 0)
-        .sort((a, b) => new Date(a.expiry) - new Date(b.expiry))[0];
+      const pack = nextActivePack(gym);
 
       if (!pack) {
         alert("No passes remaining");
@@ -401,12 +464,28 @@
       pack.remaining--;
       data.visits.unshift({ gym: gym.name, date: new Date().toISOString() });
 
+      lastClimb = { gymId: gym.id, packId: pack.id };
+
+      await save();
+    };
+
+    window.undoClimb = async function (gymId) {
+      if (!lastClimb || lastClimb.gymId !== gymId) return;
+
+      const gym = data.gyms.find(g => g.id === gymId);
+      const pack = gym.packs.find(p => p.id === lastClimb.packId);
+      if (pack) pack.remaining++;
+
+      data.visits.shift();
+      lastClimb = null;
+
       await save();
     };
 
     window.deleteGym = async function (id) {
       if (!confirm("Delete gym?")) return;
       data.gyms = data.gyms.filter(g => g.id !== id);
+      if (lastClimb && lastClimb.gymId === id) lastClimb = null;
       await save();
     };
 
@@ -435,6 +514,7 @@
             return;
           }
           data = imported;
+          lastClimb = null;
           await save();
           alert("Backup restored successfully");
         } catch {
@@ -455,7 +535,7 @@
       }
 
       select.innerHTML =
-        `<option value="" disabled>Select a gym…</option>` +
+        `<option value="" disabled selected>Select a gym…</option>` +
         data.gyms.map(g => `<option value="${g.name}">${g.name}</option>`).join("");
 
       if (previousValue && [...select.options].some(o => o.value === previousValue)) {
@@ -468,14 +548,23 @@
 
       const gymsEl = document.getElementById("gyms");
 
+      const visible = data.gyms
+        .filter(gym => totalPasses(gym) > 0 || (lastClimb && lastClimb.gymId === gym.id))
+        .map(gym => ({ gym, next: nextActivePack(gym) }))
+        .sort((a, b) => {
+          const FAR_FUTURE = new Date(8640000000000000);
+          const dateA = a.next ? new Date(a.next.expiry) : FAR_FUTURE;
+          const dateB = b.next ? new Date(b.next.expiry) : FAR_FUTURE;
+          return dateA - dateB;
+        });
+
       if (data.gyms.length === 0) {
         gymsEl.innerHTML = `<div class="card empty-state">No gyms yet — add one above to get started.</div>`;
+      } else if (visible.length === 0) {
+        gymsEl.innerHTML = `<div class="card empty-state">No active passes right now — add a pack above.</div>`;
       } else {
-        gymsEl.innerHTML = data.gyms.map(gym => {
+        gymsEl.innerHTML = visible.map(({ gym, next }) => {
           const total = totalPasses(gym);
-          const next = gym.packs
-            .filter(p => p.remaining > 0)
-            .sort((a, b) => new Date(a.expiry) - new Date(b.expiry))[0];
 
           let warning = "";
           if (next) {
@@ -483,6 +572,8 @@
             if (days < 0) warning = `<div class="expired">Expired</div>`;
             else if (days <= 30) warning = `<div class="warning">${days} day(s) until expiry</div>`;
           }
+
+          const showUndo = lastClimb && lastClimb.gymId === gym.id;
 
           return `
             <div class="card">
@@ -494,6 +585,7 @@
               <br>
               <div class="row">
                 <button class="success" onclick="climb(${gym.id})">Climbed Today</button>
+                ${showUndo ? `<button class="warn-btn" onclick="undoClimb(${gym.id})">Undo</button>` : ""}
                 <button class="danger" onclick="deleteGym(${gym.id})">Delete</button>
               </div>
               ${gym.packs.map(p => `
@@ -515,7 +607,11 @@
     async function init() {
       const savedCode = localStorage.getItem(LOCAL_CODE_KEY);
       if (savedCode) {
-        await enterTracker(savedCode);
+        const success = await enterExistingTracker(savedCode, { silentFail: true });
+        if (!success) {
+          localStorage.removeItem(LOCAL_CODE_KEY);
+          show("setupScreen");
+        }
       } else {
         show("setupScreen");
       }
