@@ -31,7 +31,7 @@
       box-shadow: 0 2px 8px rgba(0, 0, 0, .08);
     }
 
-    input, button {
+    input, button, select {
       width: 100%;
       box-sizing: border-box;
       padding: 12px;
@@ -39,6 +39,7 @@
       border-radius: 10px;
       border: 1px solid #ddd;
       font-size: 16px;
+      background: white;
     }
 
     button { border: none; cursor: pointer; }
@@ -53,6 +54,7 @@
     .row button { flex: 1; }
 
     .gym-name { font-size: 22px; font-weight: bold; }
+    .default-length { font-size: 12px; color: #9ca3af; margin-top: -4px; margin-bottom: 8px; }
     .passes { font-size: 34px; font-weight: bold; }
     .warning { color: #d97706; font-weight: bold; }
     .expired { color: #dc2626; font-weight: bold; }
@@ -143,8 +145,20 @@
     </div>
 
     <div class="card">
+      <h3>Manage Gyms</h3>
+      <input id="newGymName" placeholder="Gym Name">
+      <select id="newGymExpiryLength">
+        <option value="12">Default pass length: 12 months</option>
+        <option value="6">Default pass length: 6 months</option>
+      </select>
+      <button class="primary" onclick="addGym()">Add Gym</button>
+    </div>
+
+    <div class="card">
       <h3>Add Pass Pack</h3>
-      <input id="gymName" placeholder="Gym Name">
+      <select id="gymNameSelect" onchange="onGymSelectChange()">
+        <option value="" disabled selected>Select a gym…</option>
+      </select>
       <input id="passCount" type="number" placeholder="Number of Passes">
       <input id="expiryDate" type="date">
       <button class="primary" onclick="addPack()">Add Pass Pack</button>
@@ -217,6 +231,20 @@
 
     function sanitizeCode(raw) {
       return raw.trim().toUpperCase();
+    }
+
+    function formatDateLocal(d) {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    }
+
+    function getDefaultExpiry(months = 12) {
+      const d = new Date();
+      d.setMonth(d.getMonth() + months);
+      d.setDate(d.getDate() - 1);
+      return formatDateLocal(d);
     }
 
     async function loadOrCreateDoc(code) {
@@ -294,25 +322,55 @@
       render();
     }
 
+    window.addGym = async function () {
+      const name = document.getElementById("newGymName").value.trim();
+      const months = parseInt(document.getElementById("newGymExpiryLength").value);
+
+      if (!name) {
+        alert("Enter a gym name");
+        return;
+      }
+
+      if (data.gyms.find(g => g.name === name)) {
+        alert("A gym with that name already exists");
+        return;
+      }
+
+      data.gyms.push({ id: Date.now(), name, packs: [], defaultExpiryMonths: months });
+
+      document.getElementById("newGymName").value = "";
+
+      await save();
+    };
+
+    window.onGymSelectChange = function () {
+      const select = document.getElementById("gymNameSelect");
+      const gym = data.gyms.find(g => g.name === select.value);
+      const months = gym ? (gym.defaultExpiryMonths || 12) : 12;
+      document.getElementById("expiryDate").value = getDefaultExpiry(months);
+    };
+
     window.addPack = async function () {
-      const gymName = document.getElementById("gymName").value.trim();
+      const select = document.getElementById("gymNameSelect");
+      const gymName = select.value;
+
       const passCount = parseInt(document.getElementById("passCount").value);
       const expiry = document.getElementById("expiryDate").value;
 
       if (!gymName || !passCount || !expiry) {
-        alert("Fill all fields");
+        alert("Fill all fields, and make sure a gym is selected");
         return;
       }
 
-      let gym = data.gyms.find(g => g.name === gymName);
+      const gym = data.gyms.find(g => g.name === gymName);
       if (!gym) {
-        gym = { id: Date.now(), name: gymName, packs: [] };
-        data.gyms.push(gym);
+        alert("Select a valid gym");
+        return;
       }
 
       gym.packs.push({ id: Date.now() + Math.random(), remaining: passCount, expiry });
 
-      document.getElementById("gymName").value = "";
+      select.value = "";
       document.getElementById("passCount").value = "";
       document.getElementById("expiryDate").value = "";
 
@@ -387,11 +445,31 @@
       event.target.value = "";
     };
 
+    function populateGymSelect() {
+      const select = document.getElementById("gymNameSelect");
+      const previousValue = select.value;
+
+      if (data.gyms.length === 0) {
+        select.innerHTML = `<option value="" disabled selected>Add a gym above first</option>`;
+        return;
+      }
+
+      select.innerHTML =
+        `<option value="" disabled>Select a gym…</option>` +
+        data.gyms.map(g => `<option value="${g.name}">${g.name}</option>`).join("");
+
+      if (previousValue && [...select.options].some(o => o.value === previousValue)) {
+        select.value = previousValue;
+      }
+    }
+
     function render() {
+      populateGymSelect();
+
       const gymsEl = document.getElementById("gyms");
 
       if (data.gyms.length === 0) {
-        gymsEl.innerHTML = `<div class="card empty-state">No gyms yet — add a pass pack above to get started.</div>`;
+        gymsEl.innerHTML = `<div class="card empty-state">No gyms yet — add one above to get started.</div>`;
       } else {
         gymsEl.innerHTML = data.gyms.map(gym => {
           const total = totalPasses(gym);
@@ -409,6 +487,7 @@
           return `
             <div class="card">
               <div class="gym-name">${gym.name}</div>
+              <div class="default-length">Default pass length: ${gym.defaultExpiryMonths || 12} months</div>
               <div class="passes">${total}</div>
               ${warning}
               ${next ? `<div>Next expiry: ${next.expiry}</div>` : `<div>No active packs</div>`}
