@@ -135,7 +135,7 @@
     <p>This tracker stores your data in the cloud under a personal access key, so it survives even if your phone clears site data.</p>
 
     <input id="inviteWordInput" type="password" placeholder="Invite word (ask whoever shared this app)">
-    <div class="hint">A random access key will be generated for you — write it down somewhere safe once it appears.</div>
+    <div class="hint">A random access key will be generated for you — write it down somewhere safe once it appears. You can copy it from the next page.</div>
     <button class="primary" onclick="createNewTracker()">Create Tracker</button>
 
     <div class="setup-divider">— or, if you already have a key —</div>
@@ -220,7 +220,7 @@
 
     let data = { gyms: [], visits: [] };
     let currentCode = null;
-    let lastClimb = null; // { gymId, packId } -- transient, not saved to Firestore
+    let undoStack = []; // stack of { gymId, packId }, oldest first -- not saved to Firestore
 
     function setStatus(msg, isError = false) {
       const el = document.getElementById("statusBar");
@@ -353,7 +353,7 @@
       if (!confirm("Switch to a different tracker key? Your current data stays safely in the cloud under this key.")) return;
       localStorage.removeItem(LOCAL_CODE_KEY);
       currentCode = null;
-      lastClimb = null;
+      undoStack = [];
       hide("mainApp");
       show("setupScreen");
     };
@@ -428,6 +428,7 @@
       const gym = data.gyms.find(g => g.name === select.value);
       const months = gym ? (gym.defaultExpiryMonths || 12) : 12;
       document.getElementById("expiryDate").value = gym ? getDefaultExpiry(months) : "";
+      document.getElementById("passCount").value = gym ? 10 : "";
     };
 
     window.addPack = async function () {
@@ -485,20 +486,23 @@
       pack.remaining--;
       data.visits.unshift({ gym: gym.name, date: new Date().toISOString() });
 
-      lastClimb = { gymId: gym.id, packId: pack.id };
+      undoStack.push({ gymId: gym.id, packId: pack.id });
 
       await save();
     };
 
     window.undoClimb = async function (gymId) {
-      if (!lastClimb || lastClimb.gymId !== gymId) return;
+      if (undoStack.length === 0) return;
+      const top = undoStack[undoStack.length - 1];
+      if (top.gymId !== gymId) return;
+
+      undoStack.pop();
 
       const gym = data.gyms.find(g => g.id === gymId);
-      const pack = gym.packs.find(p => p.id === lastClimb.packId);
+      const pack = gym.packs.find(p => p.id === top.packId);
       if (pack) pack.remaining++;
 
       data.visits.shift();
-      lastClimb = null;
 
       await save();
     };
@@ -506,7 +510,7 @@
     window.deleteGym = async function (id) {
       if (!confirm("Delete gym?")) return;
       data.gyms = data.gyms.filter(g => g.id !== id);
-      if (lastClimb && lastClimb.gymId === id) lastClimb = null;
+      undoStack = []; // structural change -- clear undo history rather than risk it pointing at a deleted gym
       await save();
     };
 
@@ -535,7 +539,7 @@
             return;
           }
           data = imported;
-          lastClimb = null;
+          undoStack = [];
           await save();
           alert("Backup restored successfully");
         } catch {
@@ -569,8 +573,10 @@
 
       const gymsEl = document.getElementById("gyms");
 
+      const topUndo = undoStack.length > 0 ? undoStack[undoStack.length - 1] : null;
+
       const visible = data.gyms
-        .filter(gym => totalPasses(gym) > 0 || (lastClimb && lastClimb.gymId === gym.id))
+        .filter(gym => totalPasses(gym) > 0 || (topUndo && topUndo.gymId === gym.id))
         .map(gym => ({ gym, next: nextActivePack(gym) }))
         .sort((a, b) => {
           const FAR_FUTURE = new Date(8640000000000000);
@@ -594,7 +600,7 @@
             else if (days <= 30) warning = `<div class="warning">${days} day(s) until expiry</div>`;
           }
 
-          const showUndo = lastClimb && lastClimb.gymId === gym.id;
+          const showUndo = topUndo && topUndo.gymId === gym.id;
 
           return `
             <div class="card">
