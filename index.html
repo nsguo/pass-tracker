@@ -232,7 +232,7 @@
     function hide(id) { document.getElementById(id).classList.add("hidden"); }
 
     function sanitizeCode(raw) {
-      return raw.trim().toLowerCase();
+      return raw.trim().toUpperCase();
     }
 
     function generateCode() {
