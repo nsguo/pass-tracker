@@ -135,7 +135,8 @@
     <p>This tracker stores your data in the cloud under a personal access key, so it survives even if your phone clears site data.</p>
 
     <input id="newAccessKeyInput" placeholder="Choose an access key (12+ characters)">
-    <div class="hint">Pick something memorable but long — a short phrase works well. Write it down somewhere safe once created.</div>
+    <input id="inviteWordInput" type="password" placeholder="Invite word (ask whoever shared this app)">
+    <div class="hint">Pick something memorable but long for your access key — a short phrase works well. Write it down somewhere safe once created.</div>
     <button class="primary" onclick="createNewTracker()">Create Tracker</button>
 
     <div class="setup-divider">— or, if you already have a key —</div>
@@ -203,7 +204,7 @@
     // PASTE YOUR OWN FIREBASE CONFIG HERE (from Firebase console ->
     // Project Settings -> General -> Your apps -> Web app)
     // ---------------------------------------------------------------
- const firebaseConfig = {
+    const firebaseConfig = {
       apiKey: "AIzaSyCm4B4k_amzphqZbSw0ojLqsdQX2Jgtt1E",
       authDomain: "pass-tracker-e2c13.firebaseapp.com",
       projectId: "pass-tracker-e2c13",
@@ -211,7 +212,7 @@
       messagingSenderId: "530484049180",
       appId: "1:530484049180:web:a931f482d006949bce36d9"
     };
-    
+
     const app = initializeApp(firebaseConfig);
     const db = getFirestore(app);
 
@@ -283,9 +284,15 @@
     window.createNewTracker = async function () {
       const raw = document.getElementById("newAccessKeyInput").value;
       const key = sanitizeCode(raw);
+      const inviteWord = document.getElementById("inviteWordInput").value.trim();
 
       if (key.length < MIN_KEY_LENGTH) {
         alert(`Choose an access key with at least ${MIN_KEY_LENGTH} characters, so it's hard for others to guess.`);
+        return;
+      }
+
+      if (!inviteWord) {
+        alert("Enter the invite word to create a new tracker.");
         return;
       }
 
@@ -300,7 +307,7 @@
           return;
         }
 
-        const fresh = { gyms: [], visits: [], accessKey: key };
+        const fresh = { gyms: [], visits: [], accessKey: key, inviteWord };
         await setDoc(ref, fresh);
 
         data = fresh;
@@ -315,7 +322,11 @@
         alert("Tracker created! Your access key is:\n\n" + key + "\n\nWrite this down somewhere safe — it's the only way to get your data back if this device's storage is ever cleared.");
       } catch (error) {
         console.error(error);
-        setStatus("Couldn't create tracker — check your internet connection and Firebase setup", true);
+        if (error.code === "permission-denied") {
+          setStatus("That invite word doesn't look right", true);
+        } else {
+          setStatus("Couldn't create tracker — check your internet connection", true);
+        }
       }
     };
 
