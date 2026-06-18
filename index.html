@@ -134,9 +134,8 @@
     <h3>Welcome</h3>
     <p>This tracker stores your data in the cloud under a personal access key, so it survives even if your phone clears site data.</p>
 
-    <input id="newAccessKeyInput" placeholder="Choose an access key (12+ characters)">
     <input id="inviteWordInput" type="password" placeholder="Invite word (ask whoever shared this app)">
-    <div class="hint">Pick something memorable but long for your access key — a short phrase works well. Write it down somewhere safe once created.</div>
+    <div class="hint">A random access key will be generated for you — write it down somewhere safe once it appears.</div>
     <button class="primary" onclick="createNewTracker()">Create Tracker</button>
 
     <div class="setup-divider">— or, if you already have a key —</div>
@@ -236,6 +235,18 @@
       return raw.trim().toLowerCase();
     }
 
+    function generateCode() {
+      const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no ambiguous 0/O, 1/I
+      const bytes = new Uint8Array(12);
+      crypto.getRandomValues(bytes);
+      let code = "";
+      for (let i = 0; i < bytes.length; i++) {
+        if (i > 0 && i % 4 === 0) code += "-";
+        code += chars[bytes[i] % chars.length];
+      }
+      return code;
+    }
+
     function formatDateLocal(d) {
       const y = d.getFullYear();
       const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -282,29 +293,28 @@
     }
 
     window.createNewTracker = async function () {
-      const raw = document.getElementById("newAccessKeyInput").value;
-      const key = sanitizeCode(raw);
       const inviteWord = document.getElementById("inviteWordInput").value.trim();
-
-      if (key.length < MIN_KEY_LENGTH) {
-        alert(`Choose an access key with at least ${MIN_KEY_LENGTH} characters, so it's hard for others to guess.`);
-        return;
-      }
 
       if (!inviteWord) {
         alert("Enter the invite word to create a new tracker.");
         return;
       }
 
-      setStatus("Checking availability…");
+      setStatus("Creating your tracker…");
       try {
-        const ref = doc(db, "trackers", key);
-        const snap = await getDoc(ref);
+        let key = generateCode();
+        let ref = doc(db, "trackers", key);
+        let snap = await getDoc(ref);
 
+        // Extremely unlikely, but regenerate once if there happens to be a collision
         if (snap.exists()) {
-          setStatus("");
-          alert("That access key is already taken. Please choose a different one.");
-          return;
+          key = generateCode();
+          ref = doc(db, "trackers", key);
+          snap = await getDoc(ref);
+          if (snap.exists()) {
+            setStatus("Couldn't generate a unique key — please try again", true);
+            return;
+          }
         }
 
         const fresh = { gyms: [], visits: [], accessKey: key, inviteWord };
